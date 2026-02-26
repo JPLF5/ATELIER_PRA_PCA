@@ -1,0 +1,44 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sqlite-restore-targeted
+  namespace: pra
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: restore
+          image: alpine
+          command: ["/bin/sh","-c"]
+          args:
+            - |
+              BACKUP_FILE="${BACKUP_FILE}"
+              if [ -z "$BACKUP_FILE" ]; then
+                echo "ERROR: BACKUP_FILE is not set."
+                exit 1
+              fi
+              if [ ! -f "/backup/$BACKUP_FILE" ]; then
+                echo "ERROR: /backup/$BACKUP_FILE not found."
+                echo "Available backups:"
+                ls -lht /backup/
+                exit 1
+              fi
+              echo "Restoring from /backup/$BACKUP_FILE ..."
+              cp "/backup/$BACKUP_FILE" /data/app.db
+              echo "Restore complete."
+          env:
+            - name: BACKUP_FILE
+              value: "${BACKUP_FILE}"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: backup
+              mountPath: /backup
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: pra-data
+        - name: backup
+          persistentVolumeClaim:
+            claimName: pra-backup

@@ -231,27 +231,75 @@ Faites preuve de pédagogie et soyez clair dans vos explications et procedures d
 **Exercice 1 :**  
 Quels sont les composants dont la perte entraîne une perte de données ?  
   
-*..Répondez à cet exercice ici..*
+Les composants dont la perte entraîne une perte de données sont les **PVC (Persistent Volume Claims)** :  
+- **PVC `pra-data`** : contient la base de données SQLite de production (`app.db`). Sa perte entraîne la **perte immédiate de toutes les données applicatives**. C'est ce que nous avons simulé dans le Scénario 2.  
+- **PVC `pra-backup`** : contient les sauvegardes horodatées de la BDD. Sa perte entraînerait l'**impossibilité de restaurer les données** en cas de sinistre sur le PVC `pra-data`.  
+
+En revanche, la perte d'un **pod** (Scénario 1) n'entraîne **aucune perte de données** car les pods sont éphémères et les données sont stockées sur les PVC, qui sont indépendants du cycle de vie des pods.
 
 **Exercice 2 :**  
 Expliquez nous pourquoi nous n'avons pas perdu les données lors de la supression du PVC pra-data  
   
-*..Répondez à cet exercice ici..*
+Lors de la suppression du PVC `pra-data` (Scénario 2), nous n'avons pas perdu définitivement les données grâce au **mécanisme de sauvegarde automatique** mis en place via un **CronJob Kubernetes** (`sqlite-backup`).  
+
+Ce CronJob s'exécute **toutes les minutes** et copie le fichier `app.db` depuis le PVC `pra-data` vers le PVC `pra-backup` avec un horodatage (timestamp Unix). Ainsi, même après la destruction du PVC `pra-data`, les copies de sauvegarde restaient intactes dans le PVC `pra-backup`.  
+
+La procédure de restauration a consisté à :  
+1. Recréer un PVC `pra-data` vide via `kubectl apply -f k8s/`  
+2. Lancer le job de restauration (`pra/50-job-restore.yaml`) qui copie la **sauvegarde la plus récente** depuis `/backup` vers `/data/app.db`  
+
+C'est le principe fondamental du **PRA** : les données sont protégées par des sauvegardes régulières stockées sur un volume séparé, permettant une restauration en cas de sinistre.
 
 **Exercice 3 :**  
 Quels sont les RTO et RPO de cette solution ?  
   
-*..Répondez à cet exercice ici..*
+**RPO (Recovery Point Objective)** — Perte de données maximale tolérée :  
+Le RPO est de **1 minute maximum**. En effet, le CronJob de sauvegarde s'exécute toutes les minutes (`*/1 * * * *`). Dans le pire des cas, les données écrites dans la dernière minute avant le sinistre seront perdues (celles qui n'ont pas encore été sauvegardées).  
+
+**RTO (Recovery Time Objective)** — Temps de reprise du service :  
+Le RTO est estimé à **environ 2 à 5 minutes**. Il correspond au temps nécessaire pour :  
+1. Détecter le sinistre (~variable)  
+2. Recréer le PVC `pra-data` vide via `kubectl apply -f k8s/` (~30 secondes)  
+3. Lancer le job de restauration via `kubectl apply -f pra/50-job-restore.yaml` (~30 secondes)  
+4. Vérifier que l'application est de nouveau fonctionnelle (~30 secondes)  
+5. Réactiver le CronJob de sauvegarde (~10 secondes)  
+
+⚠️ Ce RTO suppose une **intervention humaine** pour détecter le problème et exécuter la procédure de restauration. Sans monitoring ni automatisation de la détection, le RTO réel peut être bien plus élevé.
 
 **Exercice 4 :**  
 Pourquoi cette solution (cet atelier) ne peux pas être utilisé dans un vrai environnement de production ? Que manque-t-il ?   
   
-*..Répondez à cet exercice ici..*
+Cette solution présente plusieurs **limites** qui la rendent inadaptée à un environnement de production :  
+
+1. **Pas de réplication géographique** : Les PVC `pra-data` et `pra-backup` sont sur le **même cluster** (même machine physique). En cas de panne matérielle du serveur, les deux volumes sont perdus simultanément.  
+2. **Base de données SQLite** : SQLite n'est pas conçu pour des accès concurrents multiples. En production, il faudrait utiliser une base de données client-serveur (PostgreSQL, MySQL) avec réplication.  
+3. **Pas de monitoring ni d'alerting** : Aucun système de surveillance ne détecte automatiquement les pannes. La détection repose sur une intervention humaine, ce qui augmente le RTO réel.  
+4. **Restauration manuelle** : La procédure de restauration nécessite une intervention humaine (lancer les commandes kubectl). Il n'y a pas de failover automatique.  
+5. **Pas de rétention des backups** : Les sauvegardes s'accumulent indéfiniment dans le PVC `pra-backup` sans politique de rotation ou de nettoyage, ce qui finira par saturer le stockage.  
+6. **Cluster mono-nœud maître** : Il n'y a qu'un seul serveur K3d. La perte de ce nœud maître rend tout le cluster indisponible.  
+7. **Pas de chiffrement des sauvegardes** : Les backups ne sont pas chiffrés, ce qui pose un problème de sécurité des données.  
+8. **Pas de test automatisé du PRA** : La procédure de restauration n'est jamais testée automatiquement, on ne peut pas garantir qu'elle fonctionnera le jour J.
   
 **Exercice 5 :**  
 Proposez une archtecture plus robuste.   
   
-*..Répondez à cet exercice ici..*
+Voici une architecture de production plus robuste :  
+
+**1. Base de données** : Remplacer SQLite par **PostgreSQL** déployé avec l'opérateur **CloudNativePG** ou **Zalando Postgres Operator**, offrant la réplication synchrone, le failover automatique et les sauvegardes intégrées (WAL archiving).  
+
+**2. Cluster Kubernetes multi-nœuds et multi-zones** : Déployer un cluster Kubernetes managé (EKS, GKE, AKS) sur **au moins 3 zones de disponibilité** avec plusieurs nœuds maîtres (control plane HA) pour survivre à la perte d'une zone entière.  
+
+**3. Stockage répliqué** : Utiliser un système de stockage distribué comme **Longhorn** ou **Rook-Ceph** pour assurer la réplication des données sur plusieurs nœuds, ou utiliser les classes de stockage managées du cloud provider (gp3 sur AWS, pd-ssd sur GCP).  
+
+**4. Sauvegardes distantes (off-site)** : Exporter les sauvegardes vers un stockage objet distant (AWS S3, GCS, Azure Blob) avec **Velero** ou un outil dédié. Appliquer une politique de rétention (ex. : 7 jours de backups horaires, 4 semaines de backups quotidiens).  
+
+**5. Monitoring et alerting** : Déployer **Prometheus + Grafana** pour la surveillance et configurer des alertes automatiques (PagerDuty, Slack) en cas de panne détectée.  
+
+**6. Failover automatique** : Mettre en place un mécanisme de restauration automatique déclenché par les alertes, réduisant le RTO à quelques secondes.  
+
+**7. Tests PRA réguliers** : Planifier des **exercices de reprise** périodiques (chaos engineering avec LitmusChaos ou ChaosMonkey) pour valider que la procédure fonctionne.  
+
+**8. Chiffrement** : Chiffrer les sauvegardes au repos et en transit, et utiliser des secrets Kubernetes managés (Sealed Secrets, Vault) pour les credentials.
 
 ---------------------------------------------------
 Séquence 6 : Ateliers  
@@ -263,13 +311,77 @@ Difficulté : Moyenne (~2 heures)
 * last_backup_file : nom du dernier backup présent dans /backup
 * backup_age_seconds : âge du dernier backup
 
+La route `GET /status` a été ajoutée dans `app/app.py`. Elle retourne un JSON contenant :  
+- `count` : nombre d'événements en base  
+- `last_backup_file` : nom du dernier fichier de backup présent dans `/backup`  
+- `backup_age_seconds` : âge en secondes du dernier backup  
+
+Le déploiement Kubernetes (`k8s/20-deployment.yaml`) a été modifié pour monter également le PVC `pra-backup` dans le pod Flask sur `/backup`, afin que la route `/status` puisse lire les fichiers de sauvegarde.  
+
 *..**Déposez ici une copie d'écran** de votre réussite..*
 
 ---------------------------------------------------
 ### **Atelier 2 : Choisir notre point de restauration**  
 Aujourd’hui nous restaurobs “le dernier backup”. Nous souhaitons **ajouter la capacité de choisir un point de restauration**.
 
-*..Décrir ici votre procédure de restauration (votre runbook)..*  
+#### Runbook — Restauration depuis un point de restauration choisi
+
+**Contexte** : Par défaut, le job de restauration (`pra/50-job-restore.yaml`) restaure le dernier backup. Nous avons ajouté la possibilité de **choisir un point de restauration spécifique** grâce à un job paramétré (`pra/51-job-restore-targeted.yaml`).  
+
+**Étape 1 — Lister les backups disponibles**  
+```bash
+kubectl -n pra run list-backups --rm -it --image=alpine \
+  --overrides='{
+    "spec": {
+      "containers": [{
+        "name": "list",
+        "image": "alpine",
+        "command": ["ls", "-lht", "/backup"],
+        "volumeMounts": [{
+          "name": "backup",
+          "mountPath": "/backup"
+        }]
+      }],
+      "volumes": [{
+        "name": "backup",
+        "persistentVolumeClaim": {
+          "claimName": "pra-backup"
+        }
+      }]
+    }
+  }'
+```
+Notez le nom du fichier de backup souhaité (ex : `app-1740500460.db`).  
+
+**Étape 2 — Préparer la restauration (arrêter l'app et les sauvegardes)**  
+```bash
+kubectl -n pra scale deployment flask --replicas=0
+kubectl -n pra patch cronjob sqlite-backup -p '{"spec":{"suspend":true}}'
+kubectl -n pra delete job --all
+```
+
+**Étape 3 — Lancer la restauration ciblée**  
+Remplacez `<NOM_DU_BACKUP>` par le fichier choisi à l'étape 1 :  
+```bash
+kubectl -n pra delete job sqlite-restore-targeted --ignore-not-found
+BACKUP_FILE="<NOM_DU_BACKUP>" envsubst < pra/51-job-restore-targeted.yaml | kubectl apply -f -
+```
+Ou plus simplement, éditez le fichier `pra/51-job-restore-targeted.yaml` en remplaçant `${BACKUP_FILE}` par le nom du fichier, puis :  
+```bash
+kubectl apply -f pra/51-job-restore-targeted.yaml
+```
+
+**Étape 4 — Vérifier la restauration et relancer les services**  
+```bash
+kubectl -n pra scale deployment flask --replicas=1
+kubectl -n pra port-forward svc/flask 8080:80 >/tmp/web.log 2>&1 &
+```
+Vérifier via `/consultation` et `/count` que les données attendues sont bien présentes.  
+
+**Étape 5 — Réactiver les sauvegardes**  
+```bash
+kubectl -n pra patch cronjob sqlite-backup -p '{"spec":{"suspend":false}}'
+```  
   
 ---------------------------------------------------
 Evaluation
