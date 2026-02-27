@@ -318,7 +318,7 @@ La route `GET /status` a été ajoutée dans `app/app.py`. Elle retourne un JSON
 
 Le déploiement Kubernetes (`k8s/20-deployment.yaml`) a été modifié pour monter également le PVC `pra-backup` dans le pod Flask sur `/backup`, afin que la route `/status` puisse lire les fichiers de sauvegarde.  
 
-*..**Déposez ici une copie d'écran** de votre réussite..*
+![alt text](image.png)
 
 ---------------------------------------------------
 ### **Atelier 2 : Choisir notre point de restauration**  
