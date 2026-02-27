@@ -316,7 +316,36 @@ La route `GET /status` a été ajoutée dans `app/app.py`. Elle retourne un JSON
 - `last_backup_file` : nom du dernier fichier de backup présent dans `/backup`  
 - `backup_age_seconds` : âge en secondes du dernier backup  
 
-Le déploiement Kubernetes (`k8s/20-deployment.yaml`) a été modifié pour monter également le PVC `pra-backup` dans le pod Flask sur `/backup`, afin que la route `/status` puisse lire les fichiers de sauvegarde.  
+#### Procédure de réalisation
+
+**1. Modification du code Flask (`app/app.py`)**  
+Ajout des imports nécessaires (`glob`, `time`) et d'une nouvelle route `/status` qui :  
+- Interroge la base SQLite pour compter les événements (`SELECT COUNT(*)`)  
+- Liste les fichiers `.db` dans le répertoire `/backup` avec `glob`  
+- Identifie le fichier le plus récent et calcule son âge en secondes grâce à `os.path.getmtime()`  
+- Retourne le tout en JSON via `jsonify()`  
+
+**2. Modification du déploiement Kubernetes (`k8s/20-deployment.yaml`)**  
+Le pod Flask ne montait que le PVC `pra-data` sur `/data`. Pour que la route `/status` puisse accéder aux fichiers de backup, nous avons ajouté un second `volumeMount` pour monter le PVC `pra-backup` sur `/backup`.  
+
+**3. Rebuild et redéploiement**  
+```bash
+# Rebuild de l'image Docker avec le nouveau code
+packer build -var "image_tag=1.1" .
+
+# Import dans le cluster K3d
+k3d image import pra/flask-sqlite:1.1 -c pra
+
+# Mise à jour du tag dans le deployment (1.0 -> 1.1)
+# puis redéploiement
+kubectl apply -f k8s/
+
+# Port-forward pour tester
+kubectl -n pra port-forward svc/flask 8080:80 >/tmp/web.log 2>&1 &
+```
+
+**4. Vérification**  
+Accès à la route `/status` dans le navigateur :  
 
 ![alt text](image.png)
 
