@@ -353,6 +353,27 @@ Accès à la route `/status` dans le navigateur :
 ### **Atelier 2 : Choisir notre point de restauration**  
 Aujourd’hui nous restaurobs “le dernier backup”. Nous souhaitons **ajouter la capacité de choisir un point de restauration**.
 
+#### Procédure de réalisation
+
+**1. Analyse du job de restauration existant (`pra/50-job-restore.yaml`)**  
+Le job existant restaure toujours le **dernier backup** via la commande `ls -t /backup/*.db | head -1`. Il ne permet pas de choisir un point de restauration spécifique.  
+
+**2. Création d'un job paramétré (`pra/51-job-restore-targeted.yaml`)**  
+Nous avons créé un nouveau job Kubernetes qui accepte une variable d'environnement `BACKUP_FILE` permettant de spécifier le fichier de backup exact à restaurer. Le job :  
+- Vérifie que la variable `BACKUP_FILE` est définie  
+- Vérifie que le fichier existe dans `/backup`  
+- Copie le fichier choisi vers `/data/app.db`  
+- Affiche un message de confirmation ou d'erreur  
+
+**3. Test de la restauration ciblée**  
+Nous avons testé le processus complet :  
+- Listé les backups disponibles avec `kubectl -n pra exec deployment/flask -- ls -lht /backup`  
+- Choisi un backup spécifique (pas le plus récent) pour vérifier que la restauration ciblée fonctionne  
+- Arrêté l'application et les sauvegardes, supprimé le PVC `pra-data`  
+- Recréé le PVC vide, puis lancé le job de restauration ciblée avec le backup choisi  
+- Vérifié via `/consultation` et `/count` que les données correspondent bien au point de restauration sélectionné  
+- Réactivé les sauvegardes automatiques  
+
 #### Runbook — Restauration depuis un point de restauration choisi
 
 **Contexte** : Par défaut, le job de restauration (`pra/50-job-restore.yaml`) restaure le dernier backup. Nous avons ajouté la possibilité de **choisir un point de restauration spécifique** grâce à un job paramétré (`pra/51-job-restore-targeted.yaml`).  
